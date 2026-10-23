@@ -27,13 +27,20 @@ echo "RESULT lan_client=$(docker run --rm curlimages/curl:8.10.1 -s -m 20 -x htt
 CFG=$(grep -rl clash_api $D 2>/dev/null | head -1)
 CTL=$(jq -r '.experimental.clash_api.external_controller' "$CFG"); SEC=$(jq -r '.experimental.clash_api.secret' "$CFG")
 echo "config=$CFG controller=$CTL"
-for h in digikala.com aparat.com snapp.ir bmi.ir www.bankmellat.ir sep.shaparak.ir divar.ir google.com; do
-  curl -s -o /dev/null -m 12 --limit-rate 3k -x $P "https://$h/" & pid=$!
-  sleep 3
-  c=$(curl -s -m 5 -H "Authorization: Bearer $SEC" "http://$CTL/connections" | jq -c --arg h "$h" '[.connections[]?|select(.metadata.host==$h)|.chains]|unique')
+for h in digikala.com aparat.com snapp.ir bmi.ir www.bankmellat.ir divar.ir google.com; do
+  echo "RESULT dns_ecs $h -> $(dig +short +subnet=2.176.0.0/24 @8.8.8.8 $h A | tail -1)"
+  curl -s -o /dev/null -m 10 --limit-rate 100 -x $P "https://$h/" & pid=$!
+  seen=""
+  for k in 1 2 3 4 5 6; do
+    sleep 0.7
+    c=$(curl -s -m 3 -H "Authorization: Bearer $SEC" "http://$CTL/connections" | jq -c --arg h "$h" '[.connections[]?|select(.metadata.host==$h)|{c:.chains[0],ip:.metadata.destinationIP}]|unique|.[]')
+    [ -n "$c" ] && seen="$seen $c"
+  done
   wait $pid
-  echo "RESULT route $h -> $c"
+  echo "RESULT route $h -> $(echo $seen | tr ' ' '\n' | sort -u | tr '\n' ' ')"
 done
+echo "RESULT hotspot_state=$(api GET /api/state | jq -c 'with_entries(select(.key|test("lan|share|hotspot|addr";"i")))')"
+echo "RESULT host_ips=$(hostname -I)"
 sleep 150
 echo "== logs"; api GET /api/logs | jq -r '.[]|"\(.time[11:19]) \(.level) \(.text)"' | tail -80
 echo "RESULT final_conn=$(api GET /api/state | jq -c .conn)"

@@ -2,9 +2,7 @@
 # Release APKs on an emulator: update over 0.3.0, connect and disconnect
 # by tapping the real UI, check the VPN is really gone afterwards.
 set -u
-adb install /tmp/0.3.0.apk
-echo "RESULT update_over_0.3.0: $(adb install -r /tmp/0.3.1.apk 2>&1 | tail -1)"
-adb uninstall app.albatross.vpn >/dev/null; adb install /tmp/0.3.1.apk | tail -1
+echo "RESULT install: $(adb install /tmp/pr.apk 2>&1 | tail -1)"
 adb shell appops set app.albatross.vpn ACTIVATE_VPN allow
 adb shell pm grant app.albatross.vpn android.permission.POST_NOTIFICATIONS 2>/dev/null
 vpn() { adb shell dumpsys connectivity | grep -c "VPN CONNECTED\|Transports: VPN"; }

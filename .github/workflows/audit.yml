@@ -5,11 +5,17 @@ on:
     branches: ["audit/**"]
 permissions:
   contents: read
+  actions: read
 jobs:
   engine:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Use the code under test
+        run: |
+          cp -r audit /tmp/audit
+          git fetch -q origin "$(cat audit/target-branch)" && git checkout -q FETCH_HEAD
+          cp -r /tmp/audit/. audit/
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -32,10 +38,15 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Download releases
+      - name: Download the build under test
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          for v in 0.3.0 0.3.1; do curl -fsSL -o /tmp/$v.apk https://github.com/${{ github.repository }}/releases/download/v$v/Albatross-$v-android-x86_64.apk; done
-          for v in 0.3.0 0.3.1; do echo "== $v"; "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs /tmp/$v.apk | grep -i "SHA-256"; done
+          b="$(cat audit/target-branch)"
+          id=$(gh api "repos/${{ github.repository }}/actions/runs?branch=$b&event=push&status=success" --jq '.workflow_runs[0].id')
+          echo "build run $id"
+          gh run download "$id" -R ${{ github.repository }} -p 'Albatross-android-*' -D /tmp/art
+          cp "$(ls /tmp/art/*/*x86_64*.apk | head -1)" /tmp/pr.apk
       - uses: reactivecircus/android-emulator-runner@v2.33.0
         with:
           api-level: 34
