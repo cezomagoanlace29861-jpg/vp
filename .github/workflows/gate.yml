@@ -1,0 +1,239 @@
+name: Release gate
+# Checker-only: tests a release candidate; changes nothing in the app.
+on:
+  push:
+    branches: ["audit/**"]
+permissions:
+  contents: read
+  actions: read
+env:
+  GH_TOKEN: ${{ github.token }}
+  KEY_SHA256: 73cc588ac98efae650cb158cbfe118e867cc013ab36827f64a45c70309ba3646
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.f.outputs.sha }}
+      run: ${{ steps.f.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: f
+        run: |
+          b="$(cat audit/target-branch)"
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/branches/$b" --jq .commit.sha)
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/runs?head_sha=$sha&status=success" --jq '.workflow_runs[0].id')
+          echo "candidate $b $sha build run $run"
+          [ -n "$run" ] && [ "$run" != null ] || { echo "GATE FAIL no successful build for $sha"; exit 1; }
+          echo "sha=$sha" >> $GITHUB_OUTPUT; echo "run=$run" >> $GITHUB_OUTPUT
+  engine:
+    needs: find
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.find.outputs.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: gate
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build and get cores
+        run: |
+          go build -o /tmp/app/albatross ./cmd/albatross
+          mkdir -p /tmp/app/core && cd /tmp/app/core
+          curl -fsSL -o sb.tgz https://github.com/SagerNet/sing-box/releases/download/v1.14.3/sing-box-1.14.3-linux-amd64.tar.gz && tar xzf sb.tgz --strip-components=1
+          curl -fsSL -o x.zip https://github.com/XTLS/Xray-core/releases/download/v26.9.30/Xray-linux-64.zip && unzip -oq x.zip xray
+          curl -fsSL -o wp.zip https://github.com/bepass-org/warp-plus/releases/download/v1.2.6/warp-plus_linux-amd64.zip && unzip -oq wp.zip warp-plus
+      - run: bash gate/audit/gate-engine.sh
+  code:
+    needs: find
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.find.outputs.sha }}
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          path: gate
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Code checks, one per earlier bug
+        run: G=gate bash gate/audit/gate-static.sh
+      - name: Known vulnerabilities in code that ships
+        if: always()
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          for m in . $(dirname $(git ls-files '*/go.mod') 2>/dev/null); do echo "== module $m"
+            (cd $m && govulncheck -show verbose ./... > /tmp/v.txt 2>&1; c=$?; grep -E "^Vulnerability #|Found in:|Fixed in:" /tmp/v.txt | head -40
+             [ $c = 0 ] && echo "GATE PASS govulncheck $m: no reachable vulnerability" || echo "GATE FAIL govulncheck $m: reachable vulnerabilities (above)"; exit $c) || F=1; done
+          exit ${F:-0}
+      - name: Old releases read the new update.json with their own code
+        if: always()
+        run: |
+          F=0
+          python3 - <<'PY'
+          import json
+          m=json.load(open("update.json")); m["latest_version"]="9.9.9"; m["require"]="9.9.9"
+          for f in m["files"].values(): f["urls"]=[u.replace("0.3.2","9.9.9") for u in f["urls"]]
+          json.dump(m,open("/tmp/next.json","w"))
+          PY
+          declare -A C=([v0.3.0]=18382629de9742eef179e1eeed0540d0ff78ee66 [v0.3.1]=ccb36d3a38c0a872187570fc1ed6c63127cff441 [v0.3.2]=23a934380144b39bdb8360bc059f8e8dd8dced08)
+          git fetch -q origin ${C[v0.3.0]} ${C[v0.3.1]} ${C[v0.3.2]}
+          for t in v0.3.0 v0.3.1 v0.3.2; do git worktree add -q --detach /tmp/$t ${C[$t]}; cp gate/audit/gate_oldclient_test.go /tmp/$t/internal/engine/
+            [ $t = v0.3.2 ] && cp gate/audit/gate_inapp032_test.go /tmp/$t/internal/engine/
+            for M in $PWD/update.json /tmp/next.json; do n=$([ $M = /tmp/next.json ] && echo "next release (require set)" || echo "update.json now")
+              (cd /tmp/$t && MANIFEST=$M VER=${t#v} go test ./internal/engine -run 'TestGateOldClient|TestGateInApp032' -count=1 >/tmp/o 2>&1) \
+                && echo "GATE PASS [B1] $t with $n: keeps connecting and is offered the new version$([ $t = v0.3.2 ] && echo ', in-app on Windows')" \
+                || { echo "GATE FAIL [B1] $t with $n: $(grep gate_ /tmp/o | head -2)"; F=1; }
+            done; done
+          exit $F
+  regress:
+    # Proof that the code checks catch the earlier bugs: on the 0.3.2 code
+    # audited before (475af7b) every one of them must fail.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 475af7bacf60691309884f1ea71edb78ac503f26
+      - uses: actions/checkout@v4
+        with:
+          path: gate
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: |
+          G=gate bash gate/audit/gate-static.sh > /tmp/r.txt 2>&1; cat /tmp/r.txt
+          F=0; for b in B1 B2 B3 B4 B5 B6 B7 B9 B10 B11; do
+            grep -q "GATE FAIL.*\[$b\]" /tmp/r.txt && echo "GATE PASS [$b] caught on the old buggy code" || { echo "GATE FAIL [$b] NOT caught on the old buggy code"; F=1; }; done
+          exit $F
+  files:
+    needs: find
+    runs-on: ubuntu-latest
+    steps:
+      - name: APKs, signing, manifest, installer
+        run: |
+          F=0; ok() { echo "GATE PASS $*"; }; bad() { echo "GATE FAIL $*"; F=1; }
+          gh run download ${{ needs.find.outputs.run }} -R $GITHUB_REPOSITORY -p 'Albatross-*' -D /tmp/a
+          find /tmp/a -type f | sed 's|/tmp/a/||'
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          for apk in $(find /tmp/a -name '*.apk'); do n=$(basename $apk)
+            d=$("$BT/apksigner" verify --print-certs "$apk" 2>/dev/null | grep -m1 "SHA-256" | awk '{print $NF}')
+            [ "$d" = "$KEY_SHA256" ] && ok "$n signed with the release key 0.3.2 has (installs in place)" || bad "$n signer $d"
+            "$BT/apksigner" verify -v "$apk" 2>/dev/null | grep -q "v2 scheme (APK Signature Scheme v2): true" && ok "$n v2 signed" || bad "$n not v2 signed"
+            b=$("$BT/aapt2" dump badging "$apk"); echo "$b" | grep -E "^package|sdkVersion|native-code" | sed "s/^/  $n: /"
+            echo "$b" | grep -q "targetSdkVersion:'36'" && ok "$n targetSdk 36" || bad "$n targetSdk"
+            echo "$b" | grep -q "package: name='app.albatross.vpn'" && ok "$n package app.albatross.vpn" || bad "$n package name changed"
+            case $n in *arm64*) echo "$b" | grep -q "native-code: 'arm64-v8a'$" && ok "$n arm64 only" || bad "$n native-code";; esac
+            unzip -l "$apk" | grep -q "lib/.*/libsingbox.so" && ok "$n has sing-box" || bad "$n lacks sing-box"
+          done
+          [ -n "$(find /tmp/a -name '*.apk')" ] || bad "no APK built"
+          for s in $(find /tmp/a -name 'Albatross-Setup-*.exe'); do [ $(stat -c%s $s) -gt 20000000 ] && ok "$(basename $s) size $(stat -c%s $s)" || bad "setup too small"; done
+          exit $F
+  health:
+    # [B11] GitHub stays green, [B8] the server list stays fresh.
+    needs: find
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          F=0; ok() { echo "GATE PASS $*"; }; bad() { echo "GATE FAIL $*"; F=1; }
+          R=$GITHUB_REPOSITORY; sha=${{ needs.find.outputs.sha }}
+          gh api "repos/$R/actions/runs?head_sha=$sha&per_page=100" --jq '.workflow_runs[]|select(.name!="Release gate")|"\(.name)|\(.status)|\(.conclusion)"' | sort -u > /tmp/runs
+          cat /tmp/runs
+          if grep -E "\|(failure|startup_failure|timed_out)$" /tmp/runs; then bad "[B11] red workflow runs on the candidate commit (above)"; else ok "[B11] no red workflow run on the candidate commit ($(wc -l </tmp/runs) runs)"; fi
+          for w in collect.yml hot.yml; do c=$(gh api "repos/$R/actions/workflows/$w/runs?branch=main&status=completed&per_page=5" --jq '[.workflow_runs[]|select(.conclusion!="skipped" and .conclusion!="cancelled")][0].conclusion')
+            [ "$c" = success ] && ok "[B8] $w last run on main: $c" || bad "[B8] $w last run on main: $c"; done
+          gh api "repos/$R/contents/meta.json?ref=servers" --jq .content | base64 -d > /tmp/meta.json
+          python3 - <<'PY' || F=1
+          import json, datetime as d
+          m=json.load(open("/tmp/meta.json")); u=d.datetime.fromisoformat(m["updated"][:19]+"+00:00")
+          age=(d.datetime.now(d.timezone.utc)-u).total_seconds()/60
+          r=[(age<=90,"[B8] server list updated %d min ago (limit 90)"%age),
+             (m.get("passed",0)>=200,"[B8] %d servers passed a real test and lead fresh.txt (min 200)"%m.get("passed",0)),
+             (m["files"].get("hot.txt",0)>=100,"[B8] hot.txt has %d working servers (min 100)"%m["files"].get("hot.txt",0))]
+          for c,t in r: print(("GATE PASS " if c else "GATE FAIL ")+t)
+          raise SystemExit(0 if all(c for c,_ in r) else 1)
+          PY
+          exit $F
+  android:
+    needs: find
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Releases and candidate
+        run: |
+          for v in 0.3.2; do curl -fsSL -o /tmp/$v.apk https://github.com/$GITHUB_REPOSITORY/releases/download/v$v/Albatross-$v-android-x86_64.apk; done
+          gh run download ${{ needs.find.outputs.run }} -R $GITHUB_REPOSITORY -p 'Albatross-android-*' -D /tmp/c
+          cp "$(find /tmp/c -name '*x86_64*.apk' | head -1)" /tmp/cand.apk
+      - uses: reactivecircus/android-emulator-runner@v2.33.0
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: bash audit/gate-android.sh
+  windows:
+    needs: find
+    runs-on: windows-latest
+    steps:
+      - name: Upgrade 0.3.2 -> candidate while running, then uninstall
+        shell: pwsh
+        run: |
+          $F = 0; function ok($t) { "GATE PASS $t" }; function bad($t) { "GATE FAIL $t"; $script:F = 1 }
+          $r = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v0.3.2/Albatross-Setup-0.3.2.exe"
+          Invoke-WebRequest $r -OutFile old.exe
+          gh run download ${{ needs.find.outputs.run }} -R $env:GITHUB_REPOSITORY -p 'Albatross-Setup-*' -D cand
+          $new = Get-ChildItem cand -Recurse -Filter *.exe | Select-Object -First 1
+          $dir = Join-Path $env:LOCALAPPDATA "Programs\Albatross"
+          Start-Process old.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/CURRENTUSER" -Wait
+          $exe = Get-ChildItem $env:LOCALAPPDATA,$env:ProgramFiles -Recurse -Filter Albatross.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($exe) { ok "0.3.2 installed at $($exe.DirectoryName)" } else { bad "0.3.2 not installed" ; exit 1 }
+          $dir = $exe.DirectoryName
+          $p = Start-Process $exe.FullName -ArgumentList "--headless","--ui-port","18090","--data","$env:RUNNER_TEMP\d" -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP\o.txt"
+          Start-Sleep 8
+          Start-Process $new.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/CURRENTUSER" -Wait
+          Start-Sleep 3
+          if (Get-Process -Id $p.Id -ErrorAction SilentlyContinue) { bad "old app still running after the upgrade" ; Stop-Process -Id $p.Id -Force } else { ok "installer closed the running app" }
+          $ver = (Get-Item (Join-Path $dir "Albatross.exe")).VersionInfo.ProductVersion
+          "installed version: $ver (candidate $($new.Name))"
+          foreach ($c in "sing-box","xray","warp-plus") { if (Test-Path (Join-Path $dir "core\$c.exe")) { ok "core $c present" } else { bad "core $c missing" } }
+          function Run-App($port) {
+            $o = "$env:RUNNER_TEMP\o$port.txt"
+            $q = Start-Process (Join-Path $dir "Albatross.exe") -ArgumentList "--headless","--ui-port","$port","--data","$env:RUNNER_TEMP\d" -PassThru -RedirectStandardOutput $o -RedirectStandardError "$o.err"
+            $u = $null; for ($i = 0; $i -lt 40 -and -not $u; $i++) { Start-Sleep 1; $u = Get-Content $o -ErrorAction SilentlyContinue | Where-Object { $_ -match "^http" } | Select-Object -First 1 }
+            return @($q, $u)
+          }
+          $IS = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+          $q, $url = Run-App 18091
+          if ($url) { "UI at $url"; $base = $url.Split("#")[0].TrimEnd("/"); $s = Invoke-RestMethod "$base/api/state" -Headers @{ "X-Token" = $url.Split("#")[1] }
+            $want = ($new.Name -replace '^Albatross-Setup-(.*)\.exe$','$1')
+            if ($s.version -eq $want) { ok "upgraded app runs, version $($s.version) = candidate" } else { bad "upgraded app reports $($s.version), candidate is $want" }
+          } else { bad "upgraded app did not start: $(Get-Content "$env:RUNNER_TEMP\o18091.txt.err" -Raw)" }
+          Stop-Process -Id $q.Id -Force -ErrorAction SilentlyContinue; Start-Sleep 2
+          # [B10] A crash left Windows pointing at our proxy on an OLD port.
+          Set-ItemProperty $IS ProxyEnable 1; Set-ItemProperty $IS ProxyServer "127.0.0.1:19999"
+          Set-Content "$env:RUNNER_TEMP\d\system-proxy" "127.0.0.1:19999" -NoNewline
+          $q, $url = Run-App 18092; Start-Sleep 3
+          if ((Get-ItemProperty $IS).ProxyEnable -ne 1) { ok "[B10] start clears the proxy a crash left at an old port" } else { bad "[B10] proxy left at 127.0.0.1:19999 after start (no internet for the user)" }
+          Stop-Process -Id $q.Id -Force -ErrorAction SilentlyContinue; Start-Sleep 2
+          # The user's own proxy must be left alone.
+          Remove-Item "$env:RUNNER_TEMP\d\system-proxy" -ErrorAction SilentlyContinue
+          Set-ItemProperty $IS ProxyEnable 1; Set-ItemProperty $IS ProxyServer "127.0.0.1:8888"
+          $q, $url = Run-App 18093; Start-Sleep 3
+          $p2 = Get-ItemProperty $IS
+          if ($p2.ProxyEnable -eq 1 -and $p2.ProxyServer -eq "127.0.0.1:8888") { ok "[B10] a proxy the user set is left alone" } else { bad "[B10] start changed the user's own proxy: $($p2.ProxyEnable) $($p2.ProxyServer)" }
+          Stop-Process -Id $q.Id -Force -ErrorAction SilentlyContinue; Start-Sleep 2
+          Set-ItemProperty $IS ProxyEnable 0
+          $un = Get-ChildItem $dir -Filter "unins*.exe" | Select-Object -First 1
+          Start-Process $un.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES" -Wait; Start-Sleep 3
+          if (Test-Path (Join-Path $dir "Albatross.exe")) { bad "files left after uninstall" } else { ok "uninstall removes the app" }
+          $pe = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings").ProxyEnable
+          if ($pe -eq 1) { bad "system proxy left on" } else { ok "system proxy off" }
+          exit $F
