@@ -4,16 +4,19 @@
 set -u
 echo "RESULT install: $(adb install /tmp/pr.apk 2>&1 | tail -1)"
 adb shell appops set app.albatross.vpn ACTIVATE_VPN allow
+adb shell dumpsys deviceidle whitelist +app.albatross.vpn >/dev/null
 adb shell pm grant app.albatross.vpn android.permission.POST_NOTIFICATIONS 2>/dev/null
 vpn() { adb shell dumpsys connectivity | grep -c "VPN CONNECTED\|Transports: VPN"; }
 tap() {
   for i in $(seq 1 10); do
     adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1
+    a=$(adb shell cat /sdcard/ui.xml | grep -o 'text="Allow"[^>]*bounds="[^"]*"' | grep -o 'bounds="[^"]*"' | head -1 | grep -o '[0-9]*')
+    if [ -n "$a" ]; then set -- $a; adb shell input tap $(( ($1+$3)/2 )) $(( ($2+$4)/2 )); echo "dismissed a system dialog"; sleep 2; continue; fi
     b=$(adb shell cat /sdcard/ui.xml | grep -o "content-desc=\"$1\"[^>]*bounds=\"[^\"]*\"" | grep -o 'bounds="[^"]*"' | head -1 | grep -o '[0-9]*')
     if [ -n "$b" ]; then set -- $b; adb shell input tap $(( ($1+$3)/2 )) $(( ($2+$4)/2 )); return 0; fi
     sleep 3
   done
-  echo "no element $1"; adb shell cat /sdcard/ui.xml | head -c 3000; return 1
+  echo "RESULT no element $1: $(adb shell cat /sdcard/ui.xml | grep -o 'text="[^"]\+"' | head -8 | tr '\n' ' ')"; return 1
 }
 adb logcat -c
 adb shell monkey -p app.albatross.vpn -c android.intent.category.LAUNCHER 1 >/dev/null

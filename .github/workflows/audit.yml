@@ -55,3 +55,19 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: bash audit/android.sh
+  signing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare the signatures of the two newest builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          b="$(cat audit/target-branch)"
+          for id in $(gh api "repos/${{ github.repository }}/actions/runs?branch=$b&status=success&per_page=2" --jq '.workflow_runs[].id'); do
+            gh run download "$id" -R ${{ github.repository }} -p 'Albatross-android-*' -D /tmp/s/$id
+            for a in /tmp/s/$id/*/*.apk; do
+              echo "RESULT run=$id $(basename $a)"
+              "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$a" | grep -E "certificate DN|SHA-256" | sed 's/^/RESULT   /'
+            done
+          done
