@@ -1,0 +1,46 @@
+name: Audit 0.3.1
+# Checker-only: tests the released app; changes nothing in it.
+on:
+  push:
+    branches: ["audit/**"]
+permissions:
+  contents: read
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build and get cores
+        run: |
+          go build -o /tmp/app/albatross ./cmd/albatross
+          mkdir -p /tmp/app/core && cd /tmp/app/core
+          curl -fsSL -o sb.tgz https://github.com/SagerNet/sing-box/releases/download/v1.14.3/sing-box-1.14.3-linux-amd64.tar.gz && tar xzf sb.tgz --strip-components=1
+          curl -fsSL -o x.zip https://github.com/XTLS/Xray-core/releases/download/v26.9.30/Xray-linux-64.zip && unzip -oq x.zip xray
+          curl -fsSL -o wp.zip https://github.com/bepass-org/warp-plus/releases/download/v1.2.6/warp-plus_linux-amd64.zip && unzip -oq wp.zip warp-plus
+          sudo apt-get install -y -q jq >/dev/null
+      - name: Engine test
+        run: bash audit/engine.sh
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Download releases
+        run: |
+          for v in 0.3.0 0.3.1; do curl -fsSL -o /tmp/$v.apk https://github.com/${{ github.repository }}/releases/download/v$v/Albatross-$v-android-x86_64.apk; done
+          for v in 0.3.0 0.3.1; do echo "== $v"; "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs /tmp/$v.apk | grep -i "SHA-256"; done
+      - uses: reactivecircus/android-emulator-runner@v2.33.0
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          script: bash audit/android.sh

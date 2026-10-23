@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    branches: ["**", "!servers"]
+    branches: ["**", "!servers", "!audit/**"]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
