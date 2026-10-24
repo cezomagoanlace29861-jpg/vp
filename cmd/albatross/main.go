@@ -6,6 +6,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -47,9 +48,12 @@ func main() {
 		dir = platform.DataDir()
 	}
 	os.MkdirAll(dir, 0o755)
-	logFile, _ := os.OpenFile(filepath.Join(dir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	// Lines go through engine.Redact, and the file is removed when the app
+	// quits normally: it is only kept to explain a crash.
+	logPath := filepath.Join(dir, "app.log")
+	logFile, _ := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if logFile != nil {
-		log.SetOutput(logFile)
+		log.SetOutput(engine.RedactWriter(logFile))
 	}
 
 	sysProxy := &platform.SystemProxy{}
@@ -134,4 +138,9 @@ func main() {
 	}
 	srv.Close()
 	eng.Close()
+	if logFile != nil {
+		log.SetOutput(io.Discard)
+		logFile.Close()
+		os.Remove(logPath)
+	}
 }

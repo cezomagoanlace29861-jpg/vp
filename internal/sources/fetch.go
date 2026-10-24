@@ -27,8 +27,11 @@ const (
 // Fetcher downloads sources, trying the local proxy (when connected), a
 // direct connection and public CDN mirrors of GitHub in turn.
 type Fetcher struct {
-	Direct   *http.Client
-	Proxy    func() *http.Client // returns nil while disconnected
+	Direct *http.Client
+	Proxy  func() *http.Client // returns nil while disconnected
+	// Private reaches the Worker while disconnected without showing its
+	// name (see IsWorker); nil leaves the Worker out then.
+	Private  *http.Client
 	CacheDir string
 
 	bytes atomic.Int64
@@ -88,7 +91,16 @@ func (f *Fetcher) Fetch(ctx context.Context, s Source) Result {
 		}
 		attempts = append(attempts, attempt{"direct", s.URL, f.Direct})
 		for i, m := range Mirrors(s.URL) {
-			attempts = append(attempts, attempt{"mirror" + strconv.Itoa(i+1), m, f.Direct})
+			c := f.Direct
+			if IsWorker(m) {
+				if c = proxy; c == nil {
+					c = f.Private
+				}
+				if c == nil {
+					continue
+				}
+			}
+			attempts = append(attempts, attempt{"mirror" + strconv.Itoa(i+1), m, c})
 		}
 	}
 	meta, _ := f.loadMeta(s)
@@ -270,6 +282,17 @@ func Mirrors(u string) []string {
 		}
 	}
 	return out
+}
+
+// IsWorker says whether u is on the Worker, whose name is also the account
+// service's: a plain direct call to it shows the network who uses the app.
+func IsWorker(u string) bool {
+	for _, w := range strings.Split(WorkerMirror, ",") {
+		if w = strings.TrimRight(strings.TrimSpace(w), "/"); w != "" && strings.HasPrefix(u, w+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // ownRepo is the app's own repository, where the collector publishes.

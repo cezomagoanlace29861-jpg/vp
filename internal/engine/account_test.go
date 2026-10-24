@@ -91,24 +91,28 @@ func TestAccountGate(t *testing.T) {
 		t.Fatalf("an account with data left was refused: %v", err)
 	}
 
-	// An answer from a moment ago stands; the service is asked again later.
+	// The last answer stands, even an old one: connecting makes no direct
+	// call, and the meter asks through the VPN once it is up.
 	clock := time.Now()
 	e.acct.Now = func() time.Time { return clock }
 	svc.mu.Lock()
 	svc.off = true
 	svc.mu.Unlock()
+	clock = clock.Add(3 * time.Minute)
 	if err := e.AllowConnect(); err != nil {
-		t.Fatalf("asked the service again right after an answer: %v", err)
+		t.Fatalf("asked the service when the last answer allowed connecting: %v", err)
 	}
 	svc.mu.Lock()
 	svc.off = false
 	svc.mu.Unlock()
-	clock = clock.Add(3 * time.Minute)
 
-	// Used up: refused with a message the user can read, and the renewal date.
+	// Used up (as counted here): the service is asked, since the allowance
+	// may have renewed, and it refuses with a message the user can read,
+	// with the renewal date.
 	svc.mu.Lock()
 	svc.used, svc.reset = 1000, time.Date(2030, 3, 5, 0, 0, 0, 0, time.UTC).Unix()
 	svc.mu.Unlock()
+	e.acct.Add(1000, 0)
 	var limit *LimitError
 	if err := e.Connect(""); !errors.As(err, &limit) || limit.Reason != "quota" {
 		t.Fatalf("connect over the quota: %v", err)

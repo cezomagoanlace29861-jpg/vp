@@ -1,0 +1,118 @@
+name: Ad list
+
+# Builds the ad, tracker and threat list the apps block (geosite-ads.srs)
+# from free lists, every day after HaGeZi publishes, and puts it on the
+# "rules" branch, which the apps download through mirrors (rules.go). A
+# pull request, or a run on another branch, only builds and checks it.
+on:
+  schedule:
+    - cron: "40 11 * * *"
+  push:
+    branches: [main]
+    paths: ["cmd/adlist/**", "build/adblock/**", ".github/workflows/adblock.yml"]
+  pull_request:
+    paths: ["cmd/adlist/**", "build/adblock/**", ".github/workflows/adblock.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Every run that publishes (main) waits for the one before it.
+concurrency:
+  group: adblock-${{ github.ref == 'refs/heads/main' && 'publish' || github.ref }}
+
+env:
+  SINGBOX_VERSION: "1.14.3"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Download the lists
+        run: |
+          mkdir -p lists
+          get() { curl -fsSL --retry 4 --max-time 120 -o "lists/$1" "$2"; }
+          H=https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard
+          P=https://raw.githubusercontent.com/MasterKia/PersianBlocker/main
+          get hagezi-pro.txt "$H/pro-onlydomains.txt"
+          get hagezi-tif-mini.txt "$H/tif.mini-onlydomains.txt"
+          get oisd-big.txt https://raw.githubusercontent.com/sjhgvr/oisd/main/domainswild2_big.txt
+          get adguard-dns.txt https://raw.githubusercontent.com/AdguardTeam/AdGuardSDNSFilter/gh-pages/Filters/filter.txt
+          get persianblocker-hosts.txt "$P/PersianBlockerHosts.txt"
+          get persianblocker-ads.txt "$P/PersianBlockerAds.txt"
+          get persianblocker-trackers.txt "$P/PersianBlockerTrackers.txt"
+          # A list that moved or came back as an error page must stop the
+          # run, not publish a thin list.
+          floor() { n=$(grep -cv '^[#!]' "lists/$1"); echo "$1: $n lines"; [ "$n" -gt "$2" ] || { echo "::error::$1 has only $n lines"; exit 1; }; }
+          floor hagezi-pro.txt 150000
+          floor hagezi-tif-mini.txt 10000
+          floor oisd-big.txt 150000
+          floor adguard-dns.txt 120000
+          floor persianblocker-hosts.txt 100
+      - name: Merge
+        run: go run ./cmd/adlist -allow build/adblock/allow.txt -keep build/adblock/keep-ir.txt -min 400000 -out ads.json lists/*.txt
+      - name: Compile and check
+        run: |
+          mkdir -p "$RUNNER_TEMP/sb"
+          curl -fsSL --retry 4 "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-linux-amd64.tar.gz" | tar xz --strip-components=1 -C "$RUNNER_TEMP/sb"
+          sb="$RUNNER_TEMP/sb/sing-box"
+          "$sb" rule-set compile -o geosite-ads.srs ads.json
+          size=$(stat -c%s geosite-ads.srs)
+          echo "geosite-ads.srs: $size bytes"
+          # The apps download at most 8 MiB (rules.go).
+          [ "$size" -lt 7000000 ] || { echo "::error::the list grew to $size bytes"; exit 1; }
+          blocked() { "$sb" rule-set match -f binary geosite-ads.srs "$1" 2>&1 | grep -q '^match'; }
+          bad=0
+          for h in $(grep -hv '^#' build/adblock/canary.txt build/adblock/allow.txt); do
+            if blocked "$h"; then echo "::error::$h is blocked"; bad=1; fi
+          done
+          for h in googleads.g.doubleclick.net pagead2.googlesyndication.com s0.2mdn.net www.google-analytics.com app-measurement.com api.tapsell.ir ua.yektanet.com adivery.com ad.cafebazaar.ir popupaval.ir; do
+            if ! blocked "$h"; then echo "::error::$h is not blocked"; bad=1; fi
+          done
+          exit $bad
+      - name: Publish
+        # Only main's build goes to the apps; elsewhere a run is a dry run.
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir out
+          cp geosite-ads.srs ads.json out/
+          get() { curl -fsSL --retry 4 -o "out/$1" "$2"; }
+          get LICENSE-GPL-3.0.txt https://raw.githubusercontent.com/hagezi/dns-blocklists/main/LICENSE
+          get LICENSE-AGPL-3.0.txt https://raw.githubusercontent.com/MasterKia/PersianBlocker/main/LICENSE
+          cat > out/README.md <<EOF
+          # Albatross ad list
+
+          geosite-ads.srs is a sing-box rule set that blocks ad, tracker and threat
+          domains. It is a modified work: the lists below merged, names covered by a
+          parent removed, the names in build/adblock/allow.txt left out and those in
+          build/adblock/keep-ir.txt added, by cmd/adlist on the main branch
+          (.github/workflows/adblock.yml). ads.json is its source form.
+
+          It is published under the GNU General Public License v3.0
+          (LICENSE-GPL-3.0.txt); the part from PersianBlocker is under the GNU Affero
+          General Public License v3.0 (LICENSE-AGPL-3.0.txt).
+
+          | List | Licence |
+          |---|---|
+          | HaGeZi Pro and TIF mini, https://github.com/hagezi/dns-blocklists | GPL-3.0 |
+          | OISD Big, https://github.com/sjhgvr/oisd | GPL-3.0 |
+          | AdGuard DNS filter, https://github.com/AdguardTeam/AdGuardSDNSFilter | GPL-3.0 |
+          | PersianBlocker, https://github.com/MasterKia/PersianBlocker | AGPL-3.0 |
+
+          Built $(date -u +%Y-%m-%d) from commit $GITHUB_SHA.
+          EOF
+          cd out
+          git init -q -b rules
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "Ad list $(date -u +%Y-%m-%d)"
+          # One commit, replaced each day: the branch never piles up old lists.
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" rules
+        env:
+          GH_TOKEN: ${{ github.token }}

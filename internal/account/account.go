@@ -82,6 +82,14 @@ type Error struct {
 
 func (e *Error) Error() string { return e.Message }
 
+// Busy says the service turned the call away for coming too often from its
+// address, which a public server shares with many other users: another
+// way in may still work.
+func Busy(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Status == http.StatusTooManyRequests
+}
+
 var (
 	// ErrSignedOut means the service no longer accepts the saved session.
 	ErrSignedOut = errors.New("signed out")

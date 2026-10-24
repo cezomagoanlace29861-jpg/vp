@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -83,11 +82,14 @@ type Engine struct {
 	// httpsOK is when a server last passed a test with a genuine
 	// certificate, which shows this device checks certificates correctly
 	// (see distrust).
-	httpsOK  time.Time
-	fetcher  *sources.Fetcher
-	tester   *tester.Tester
-	resolver *antiblock.Resolver
-	cf       *antiblock.Scanner
+	httpsOK time.Time
+	fetcher *sources.Fetcher
+	// privateDirect makes direct calls to the account service (ech.go).
+	privateDirect *http.Client
+	warmPrivate   func(host string)
+	tester        *tester.Tester
+	resolver      *antiblock.Resolver
+	cf            *antiblock.Scanner
 
 	mu           sync.Mutex
 	settings     Settings
@@ -188,9 +190,10 @@ func New(opt Options) (*Engine, error) {
 		MaxIdleConnsPerHost: 4,
 		IdleConnTimeout:     30 * time.Second,
 	}}
-	e.fetcher = &sources.Fetcher{Direct: direct, Proxy: e.proxyClient, CacheDir: filepath.Join(e.dir, "cache")}
+	e.privateDirect, e.warmPrivate = newPrivateDirect(direct)
+	e.fetcher = &sources.Fetcher{Direct: direct, Proxy: e.proxyClient, Private: e.privateDirect, CacheDir: filepath.Join(e.dir, "cache")}
 	if urls := accountURLs(opt); len(urls) > 0 {
-		e.acct = account.New(urls, account.SessionPath(e.dir), e.anyClient)
+		e.acct = account.New(urls, account.SessionPath(e.dir), e.accountHTTP)
 		e.crowdURLs = urls
 	}
 	e.tester = &tester.Tester{Runtime: e.rt}
@@ -258,7 +261,7 @@ func (e *Engine) Close() {
 }
 
 func (e *Engine) logf(level, format string, args ...any) {
-	line := LogLine{Time: time.Now(), Level: level, Text: fmt.Sprintf(format, args...)}
+	line := LogLine{Time: time.Now(), Level: level, Text: Redact(fmt.Sprintf(format, args...))}
 	e.mu.Lock()
 	e.logs = append(e.logs, line)
 	if len(e.logs) > 400 {
@@ -332,13 +335,21 @@ func (e *Engine) proxyClient() *http.Client {
 	if c == nil || !c.ready() {
 		return nil
 	}
-	u := &url.URL{Scheme: "http", Host: c.proxyAddr}
 	return &http.Client{Transport: &http.Transport{
-		Proxy:               http.ProxyURL(u),
+		Proxy:               http.ProxyURL(c.proxyURL()),
 		TLSHandshakeTimeout: 20 * time.Second,
 		MaxIdleConnsPerHost: 4,
 		IdleConnTimeout:     30 * time.Second,
 	}}
+}
+
+// accountHTTP is the account service's client: through the VPN while it
+// is up, otherwise direct without showing the service's name where possible.
+func (e *Engine) accountHTTP() *http.Client {
+	if c := e.proxyClient(); c != nil {
+		return c
+	}
+	return e.privateDirect
 }
 
 func (e *Engine) anyClient() *http.Client {
@@ -415,6 +426,10 @@ func (e *Engine) UpdateSettings(s Settings) error {
 	}
 	if old.HelpOthers != s.HelpOthers {
 		go e.updateHelp()
+	}
+	if s.BlockAds && !old.BlockAds {
+		// The ad list is only kept fresh while it is used.
+		e.refreshRules()
 	}
 	if old.DeepSources != s.DeepSources || len(old.UserSources) != len(s.UserSources) || len(old.DisabledSources) != len(s.DisabledSources) {
 		e.buildSources()

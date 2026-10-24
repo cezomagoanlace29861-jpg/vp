@@ -37,7 +37,7 @@ func (e *Engine) distrust(key uint64, name string) bool {
 		return false
 	}
 	e.pool.Update(key, func(p *pool.Entry) { p.State = pool.StateRejected; p.LastTest = pool.Minutes(time.Now()) })
-	e.logf("warn", "Server %q showed a forged certificate, so it tries to read HTTPS traffic. It will not be used again.", name)
+	e.logf("warn", "A server showed a forged certificate, so it tries to read HTTPS traffic. It will not be used again.")
 	return true
 }
 

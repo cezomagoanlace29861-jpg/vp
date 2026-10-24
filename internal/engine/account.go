@@ -37,10 +37,14 @@ const (
 	// How often use is added up and how often the service is asked.
 	meterEvery = 15 * time.Second
 	syncEvery  = time.Minute
-	// How long connecting waits for the service.
+	// How long connecting waits for a direct call to the service.
 	connectSync = 6 * time.Second
 	// How long signing in may take, finding a server to go through included.
 	signInWait = 75 * time.Second
+	// What signing in keeps for a direct call when no server got through.
+	directWait = 20 * time.Second
+	// How long connecting tries servers to recheck an account at its limit.
+	limitSync = 25 * time.Second
 )
 
 // AccountState is the signed-in user's account as the UI shows it.
@@ -106,11 +110,7 @@ func (e *Engine) Login(username, password string) error {
 		_, err := e.acct.Login(ctx, username, password)
 		return err
 	}
-	err := login(ctx)
-	if errors.Is(err, account.ErrUnreachable) && e.proxyClient() == nil {
-		// The service is filtered in many places; go through a server.
-		err = e.viaServer(ctx, login)
-	}
+	err := e.tunnelFirst(ctx, signInWait-directWait, login)
 	if err != nil {
 		if errors.Is(err, account.ErrUnreachable) || errors.Is(err, context.DeadlineExceeded) {
 			return errors.New("Cannot reach the account service. Check your internet connection and try again.")
@@ -121,11 +121,41 @@ func (e *Engine) Login(username, password string) error {
 	return nil
 }
 
+// tunnelFirst runs call through the VPN, or while it is down through
+// working servers for up to wait, and only then directly: a direct call
+// shows the network that this device talks to the service (ECH hides the
+// name where it works, see ech.go). The service is also filtered in many
+// places.
+func (e *Engine) tunnelFirst(ctx context.Context, wait time.Duration, call func(context.Context) error) error {
+	if e.proxyClient() != nil {
+		return call(ctx)
+	}
+	if e.warmPrivate != nil {
+		// Look the names up while the servers are tried.
+		for _, u := range e.crowdURLs {
+			if p, err := url.Parse(u); err == nil {
+				e.warmPrivate(p.Hostname())
+			}
+		}
+	}
+	vctx, cancel := context.WithTimeout(ctx, wait)
+	err := e.viaServer(vctx, call)
+	cancel()
+	if !errors.Is(err, account.ErrUnreachable) && !errors.Is(err, context.DeadlineExceeded) && !account.Busy(err) {
+		return err
+	}
+	return call(account.WithClient(ctx, e.privateDirect))
+}
+
 // viaServer runs call through working servers, one after another, until
 // one of them reaches the account service. On a first start the servers
 // are still being found, so it waits for them.
 func (e *Engine) viaServer(ctx context.Context, call func(context.Context) error) error {
 	err := account.ErrUnreachable
+	if e.bin.SingBox == "" {
+		// No core to go through a server with.
+		return err
+	}
 	tried := map[string]bool{}
 	for ctx.Err() == nil {
 		list := e.bestServers("", 6, tried)
@@ -151,9 +181,9 @@ func (e *Engine) viaServer(ctx context.Context, call func(context.Context) error
 		e.tester.Through(ctx, "signin", nodes, func(proxy *url.URL) bool {
 			hc := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxy), TLSHandshakeTimeout: 15 * time.Second}}
 			err = call(account.WithClient(ctx, hc))
-			return !errors.Is(err, account.ErrUnreachable)
+			return !errors.Is(err, account.ErrUnreachable) && !account.Busy(err)
 		})
-		if !errors.Is(err, account.ErrUnreachable) {
+		if !errors.Is(err, account.ErrUnreachable) && !account.Busy(err) {
 			return err
 		}
 	}
@@ -169,10 +199,11 @@ func (e *Engine) Logout() {
 	e.acct.Logout()
 }
 
-// AllowConnect says whether the signed-in user may connect now, asking the
-// service unless it answered a moment ago. When the service cannot be
-// reached the last answer stands, and a session not confirmed for days is
-// checked through the VPN as soon as it is up (see meter).
+// AllowConnect says whether the signed-in user may connect now. The last
+// answer from the service decides, and the meter asks the service through
+// the VPN as soon as it is up, so connecting makes no direct call. Only an
+// account the last answer put at a limit is checked first (its allowance
+// may have renewed), through servers before going direct.
 func (e *Engine) AllowConnect() error {
 	if e.acct == nil {
 		return nil
@@ -182,18 +213,19 @@ func (e *Engine) AllowConnect() error {
 		return ErrLoginRequired
 	}
 	info, now := v.Info, e.acct.Now()
-	if now.Sub(v.SyncedAt) > syncFresh || info.Why(now) != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), connectSync)
-		got, err := e.acct.Sync(ctx)
+	if info.Why(now) != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), limitSync+connectSync)
+		err := e.tunnelFirst(ctx, limitSync, func(ctx context.Context) error {
+			got, err := e.acct.Sync(ctx)
+			if err == nil {
+				info = got
+			}
+			return err
+		})
 		cancel()
-		switch {
-		case err == nil:
-			info = got
-		case errors.Is(err, account.ErrSignedOut):
+		if errors.Is(err, account.ErrSignedOut) {
 			return ErrLoginRequired
 		}
-		// Otherwise the service is likely filtered here: connecting goes
-		// on, and the meter asks it through the VPN at once.
 	}
 	if why := info.Why(now); why != "" {
 		return &LimitError{Reason: why, Message: limitMessage(why, info)}
@@ -228,8 +260,9 @@ type meterState struct {
 // service whether the user may go on, until the connection ends.
 func (e *Engine) meter(ctx context.Context, c *connection) {
 	m := &meterState{at: time.Now(), synced: time.Now()}
-	if e.acct.View().Stale {
-		// Not confirmed for days: ask at the first step.
+	if v := e.acct.View(); v.Stale || e.acct.Now().Sub(v.SyncedAt) > syncFresh {
+		// Connecting did not ask the service (AllowConnect): ask at the
+		// first step, through the VPN.
 		m.synced = time.Time{}
 	}
 	t := time.NewTicker(meterEvery)

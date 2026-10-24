@@ -600,16 +600,16 @@ func (e *Engine) switched(ctx context.Context, c *connection, from, to *member) 
 	e.setStatus(StatusConnected, connectedMessage(c))
 	if from == to {
 		// It missed the checks but answered the race: a pause, not a drop.
-		e.logf("info", "Server %q paused and answered again.", from.server.Name)
+		e.logf("info", "A paused server answered again.")
 		return
 	}
-	e.logf("info", "Server %q dropped; switched at once to ready server %q in the same location.", from.server.Name, to.server.Name)
+	e.logf("info", "A server dropped; switched at once to a ready server in the same location.")
 	go e.refreshExit(ctx, c)
 }
 
 // refreshExit learns the new exit address after a switch.
 func (e *Engine) refreshExit(ctx context.Context, c *connection) {
-	r := tester.Probe(ctx, &url.URL{Scheme: "http", Host: c.proxyAddr}, 10*time.Second)
+	r := tester.Probe(ctx, c.proxyURL(), 10*time.Second)
 	if !r.OK {
 		return
 	}
@@ -665,7 +665,7 @@ func (e *Engine) sweep(ctx context.Context, c *connection) bool {
 		c.mu.Lock()
 		d := b.delay
 		c.mu.Unlock()
-		e.logf("info", "A faster server was found in this group: %q (%d ms).", b.server.Name, d)
+		e.logf("info", "A faster server was found in this group (%d ms).", d)
 	} else if b == nil {
 		c.confirmFaster(nil)
 	}
@@ -974,7 +974,7 @@ func (e *Engine) speedRound(ctx context.Context, c *connection) {
 		// connections; say so instead.
 		c.slowNet = time.Now()
 		c.mu.Unlock()
-		e.logf("info", "Every server is slow right now (%s at best), so the network itself is slow; staying on %q.", rate(max(cur, bestSpeed)), active.server.Name)
+		e.logf("info", "Every server is slow right now (%s at best), so the network itself is slow; staying on the current server.", rate(max(cur, bestSpeed)))
 		return
 	}
 	better := best != nil && bestSpeed >= 2*cur && bestSpeed-cur >= 200<<10
@@ -992,8 +992,7 @@ func (e *Engine) speedRound(ctx context.Context, c *connection) {
 	if !swap || c.use(ctx, best) != nil {
 		return
 	}
-	e.logf("info", "Server %q was slow (%s); switched to %q (%s) in the same location.",
-		active.server.Name, rate(cur), best.server.Name, rate(bestSpeed))
+	e.logf("info", "A server was slow (%s); switched to one at %s in the same location.", rate(cur), rate(bestSpeed))
 }
 
 // rate formats a speed in bytes per second for the log.

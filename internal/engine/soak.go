@@ -104,7 +104,7 @@ func (e *Engine) soakBackups(ctx context.Context, c *connection) {
 		}
 		c.mu.Unlock()
 		if !ok {
-			e.logf("info", "Server %q answers but did not keep a connection up for a minute; it is used only as a last resort.", next.server.Name)
+			e.logf("info", "A server answers but did not keep a connection up for a minute; it is used only as a last resort.")
 		}
 	}
 }

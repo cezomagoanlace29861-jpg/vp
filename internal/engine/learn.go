@@ -191,7 +191,7 @@ func (e *Engine) learnLocal(ctx context.Context, c *connection, r region) {
 						continue
 					}
 					if l.add(host) == nil {
-						e.logf("info", "%q is a local site; it opens directly from now on.", host)
+						e.logf("info", "Found another local site; it opens directly from now on.")
 						// The core has the new list a moment after it is
 						// written; then the app reconnects directly.
 						time.AfterFunc(2*time.Second, func() { c.closeHost(ctx, host) })

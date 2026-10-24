@@ -116,7 +116,7 @@ func (e *Engine) shareStats() bool {
 	return e.settings.ShareStats && len(e.crowdURLs) > 0
 }
 
-// crowdLookup asks the service, directly and not through the VPN, which
+// crowdLookup asks the service, directly (privateDirect) and not through the VPN, which
 // operator this network is (the service sees it from where the request
 // comes from) and what passes there, and seeds a new network's table.
 func (e *Engine) crowdLookup(ctx context.Context) {
@@ -129,7 +129,7 @@ func (e *Engine) crowdLookup(ctx context.Context) {
 		ASN  uint32                  `json:"asn"`
 		ASNs map[string]crowdSummary `json:"asns"`
 	}
-	if !e.crowdCall(ctx, e.fetcher.Direct, http.MethodGet, "stats?asn=self", nil, &got) || got.ASN == 0 {
+	if !e.crowdCall(ctx, e.privateDirect, http.MethodGet, "stats?asn=self", nil, &got) || got.ASN == 0 {
 		return
 	}
 	e.net.mu.Lock()
@@ -146,11 +146,12 @@ func (e *Engine) crowdLookup(ctx context.Context) {
 	}
 }
 
-// crowdReport sends each network's tests since its last report. It goes
-// through the VPN when connected, so the report does not show the service
-// where it comes from.
+// crowdReport sends each network's tests since its last report. It only
+// goes through the VPN, so the report does not show the service where it
+// comes from, and the network does not see the device talk to the service.
 func (e *Engine) crowdReport(ctx context.Context) {
-	if !e.shareStats() {
+	hc := e.proxyClient()
+	if !e.shareStats() || hc == nil {
 		return
 	}
 	type pending struct {
@@ -172,7 +173,7 @@ func (e *Engine) crowdReport(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if !e.crowdCall(ctx, e.anyClient(), http.MethodPost, "stats", p.body, nil) {
+		if !e.crowdCall(ctx, hc, http.MethodPost, "stats", p.body, nil) {
 			continue
 		}
 		e.net.mu.Lock()

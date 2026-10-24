@@ -1,8 +1,12 @@
 package sources
 
 import (
+	"context"
+	"errors"
+	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -61,5 +65,37 @@ func TestMirrorsUseGitHubAPIOnlyForOwnRepo(t *testing.T) {
 		if strings.Contains(m, "api.github.com") || strings.Contains(m, "example") {
 			t.Fatalf("other repo uses the API: %s", m)
 		}
+	}
+}
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// The Worker shares the account service's name, so it is reached only
+// through the VPN or the private client, never by a plain direct call.
+func TestWorkerNotDirect(t *testing.T) {
+	defer func(old string) { WorkerMirror = old }(WorkerMirror)
+	WorkerMirror = "https://accounts.example.org"
+	var mu sync.Mutex
+	var direct, private []string
+	record := func(to *[]string) *http.Client {
+		return &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+			mu.Lock()
+			*to = append(*to, r.URL.String())
+			mu.Unlock()
+			return nil, errors.New("offline")
+		})}
+	}
+	f := &Fetcher{Direct: record(&direct), CacheDir: t.TempDir()}
+	src := Source{ID: "fresh", URL: CentralBase + "fresh.txt"}
+	f.Fetch(context.Background(), src)
+	f.Private = record(&private)
+	f.Fetch(context.Background(), src)
+	if len(direct) == 0 || slices.ContainsFunc(direct, IsWorker) {
+		t.Fatalf("direct calls: %v", direct)
+	}
+	if len(private) != 1 || !IsWorker(private[0]) {
+		t.Fatalf("private calls: %v", private)
 	}
 }

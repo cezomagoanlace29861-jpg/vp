@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -64,6 +65,14 @@ func TestCrowdLearning(t *testing.T) {
 		t.Fatalf("seed too heavy: %+v", tb.Proto[3])
 	}
 
+	// Reports only go through the VPN.
+	e.crowdReport(context.Background())
+	if len(reports) != 0 {
+		t.Fatal("reported while not connected")
+	}
+	e.mu.Lock()
+	e.conn = &connection{proxyAddr: strings.TrimPrefix(ts.URL, "http://"), healthy: true}
+	e.mu.Unlock()
 	e.crowdReport(context.Background())
 	if len(reports) != 1 {
 		t.Fatalf("%d reports", len(reports))

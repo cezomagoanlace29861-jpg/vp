@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -100,13 +102,19 @@ func BuildSet(nodes []*node.Node, o BuildOptions) (*Set, error) {
 		return nil, err
 	}
 	var inbounds, outbounds, rules []any
+	// The ports Xray takes traffic on lead straight to the servers, so they
+	// need a login like the app's own proxy: any program on the device
+	// could otherwise use a server through them and learn its address.
+	secret := make([]byte, 16)
+	rand.Read(secret)
+	pass := hex.EncodeToString(secret)
 	for k, i := range xrayNodes {
 		n := nodes[i]
 		xtag := "x" + strconv.Itoa(i)
 		inTag := "in" + strconv.Itoa(i)
 		inbounds = append(inbounds, map[string]any{
 			"tag": inTag, "listen": "127.0.0.1", "port": ports[k], "protocol": "socks",
-			"settings": map[string]any{"udp": true, "auth": "noauth"},
+			"settings": map[string]any{"udp": true, "auth": "password", "accounts": []any{map[string]any{"user": inTag, "pass": pass}}},
 		})
 		for _, ob := range n.Xray(xtag) {
 			outbounds = append(outbounds, ob)
@@ -114,6 +122,7 @@ func BuildSet(nodes []*node.Node, o BuildOptions) (*Set, error) {
 		rules = append(rules, map[string]any{"inboundTag": []string{inTag}, "outboundTag": xtag})
 		s.Outbounds = append(s.Outbounds, map[string]any{
 			"type": "socks", "tag": s.Tags[i], "server": "127.0.0.1", "server_port": ports[k], "version": "5",
+			"username": inTag, "password": pass,
 		})
 		s.outIdx = append(s.outIdx, i)
 		s.xrayIdx = append(s.xrayIdx, i)

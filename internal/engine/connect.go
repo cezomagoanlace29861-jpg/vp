@@ -44,6 +44,8 @@ type connection struct {
 	bypass      string // region whose sites go direct ("" = none)
 	mode        string
 	proxyAddr   string
+	proxyUser   string // with proxyPass, the local proxy's login ("" = none, see privateProxy)
+	proxyPass   string
 	running     *core.Running
 	servers     []*Server
 	members     []*member
@@ -587,7 +589,14 @@ func (e *Engine) start(gen int, country string, servers []*Server, pinned bool) 
 		listen = "0.0.0.0"
 	}
 	proxyPort := set.ProxyPort
-	if !portFree(listen, proxyPort) {
+	private := privateProxy(e.opt.Mobile, set)
+	if private {
+		// No one but the app uses the port: a new one each time, so it does
+		// not give the app away.
+		if p, err := core.FreePorts(1); err == nil {
+			proxyPort = p[0]
+		}
+	} else if !portFree(listen, proxyPort) {
 		// Another program (often another VPN client) holds the port.
 		if p, err := core.FreePorts(1); err == nil {
 			e.logf("warn", "Port %d is used by another program; using port %d instead.", proxyPort, p[0])
@@ -615,8 +624,11 @@ func (e *Engine) start(gen int, country string, servers []*Server, pinned bool) 
 		started:     time.Now(),
 		wake:        make(chan struct{}, 1),
 	}
+	if private {
+		c.proxyUser, c.proxyPass = randomToken(), randomToken()
+	}
 	opts := connOptions{
-		listen: listen, port: proxyPort, tun: set.Mode == "tun", bypass: set.Bypass, secureOnly: set.SecureOnly,
+		listen: listen, port: proxyPort, user: c.proxyUser, pass: c.proxyPass, tun: set.Mode == "tun", bypass: set.Bypass, secureOnly: set.SecureOnly,
 		blockAds: set.BlockAds, rulesDir: filepath.Join(e.dir, "rules"), clashAddr: c.clashAddr,
 		clashSecret: c.clashSecret, probeAddr: c.probeAddr, exe: e.opt.ExeName, localDNS: e.dns(), mobile: e.opt.Mobile,
 	}
@@ -667,7 +679,7 @@ func (e *Engine) start(gen int, country string, servers []*Server, pinned bool) 
 	e.mu.Unlock()
 	// Test the whole group at once and start on the first server to answer;
 	// the rest keep being tested and become the known-good backups.
-	proxy := &url.URL{Scheme: "http", Host: c.proxyAddr}
+	proxy := c.proxyURL()
 	var r, bestR tester.Result
 	var cur, best *member
 	tried := map[*member]bool{}
@@ -740,7 +752,7 @@ func (e *Engine) start(gen int, country string, servers []*Server, pinned bool) 
 				bypass = append(bypass, d, "*."+d)
 			}
 		}
-		switch err := e.setProxy(gen, c.proxyAddr, bypass); {
+		switch err := e.setProxy(gen, c.proxyTarget(), bypass); {
 		case errors.Is(err, errStale):
 			run.Stop()
 			return err
@@ -749,6 +761,11 @@ func (e *Engine) start(gen int, country string, servers []*Server, pinned bool) 
 		default:
 			c.sysProxy = true
 		}
+	} else {
+		// Switched to TUN while connected: the system proxy still points at
+		// the old connection's port, which is gone. The tunnel carries
+		// everything now.
+		e.clearProxy()
 	}
 	mctx, mcancel := context.WithCancel(e.ctx)
 	c.cancel = mcancel
@@ -851,7 +868,8 @@ func (e *Engine) setProxy(gen int, addr string, bypass []string) error {
 		return err
 	}
 	e.proxyOn = true
-	e.rememberProxySet(addr)
+	// The login stays out of the file (proxyTarget).
+	e.rememberProxySet(addr[strings.LastIndex(addr, "@")+1:])
 	return nil
 }
 
@@ -897,9 +915,39 @@ func (e *Engine) stopConn(c *connection, clearProxy bool) {
 	e.mu.Unlock()
 }
 
+// privateProxy reports whether only the app itself uses the local proxy
+// port: no system proxy points at it (on a phone the VPN reaches it through
+// tun2socks, which can log in; Windows' system proxy cannot) and other
+// devices may not use it. Then the port gets a login of its own for each
+// connection, so other apps on the device cannot use the VPN through it or
+// learn its exit address.
+func privateProxy(mobile bool, set Settings) bool {
+	return !set.AllowLAN && (mobile || set.Mode == "tun")
+}
+
+// proxyURL is the local proxy for the app's own HTTP clients.
+func (c *connection) proxyURL() *url.URL {
+	u := &url.URL{Scheme: "http", Host: c.proxyAddr}
+	if c.proxyUser != "" {
+		u.User = url.UserPassword(c.proxyUser, c.proxyPass)
+	}
+	return u
+}
+
+// proxyTarget is what the system proxy is pointed at: the address, with the
+// login before it when there is one ("user:pass@host:port", which only the
+// phone's tunnel is ever given).
+func (c *connection) proxyTarget() string {
+	if c.proxyUser == "" {
+		return c.proxyAddr
+	}
+	return c.proxyUser + ":" + c.proxyPass + "@" + c.proxyAddr
+}
+
 type connOptions struct {
 	listen      string
 	port        int
+	user, pass  string // the local proxy's login, when it has one
 	tun         bool
 	bypass      string
 	secureOnly  bool
@@ -934,7 +982,11 @@ func connectConfig(s *core.Set, o connOptions) map[string]any {
 		},
 		map[string]any{"type": "direct", "tag": "direct"},
 	)
-	inbounds := []any{map[string]any{"type": "mixed", "tag": "mixed-in", "listen": o.listen, "listen_port": o.port}}
+	mixed := map[string]any{"type": "mixed", "tag": "mixed-in", "listen": o.listen, "listen_port": o.port}
+	if o.user != "" {
+		mixed["users"] = []any{map[string]any{"username": o.user, "password": o.pass}}
+	}
+	inbounds := []any{mixed}
 	var rules []any
 	if o.probeAddr != "" {
 		// The engine measures any member's speed through this inbound by
@@ -977,23 +1029,30 @@ func connectConfig(s *core.Set, o connOptions) map[string]any {
 	}
 	if o.blockAds {
 		ruleSets = append(ruleSets, localRuleSet("geosite-ads", o.rulesDir))
-		rules = append(rules, map[string]any{"rule_set": []string{"geosite-ads"}, "action": "reject"})
+		// no_drop: sing-box otherwise drops, silently, after 50 rejects in
+		// 30 seconds, which ordinary browsing reaches; then pages hang on
+		// ad connections instead of giving up on them at once.
+		rules = append(rules, map[string]any{"rule_set": []string{"geosite-ads"}, "action": "reject", "no_drop": true})
 	}
 	dnsRules := []any{}
+	if o.blockAds {
+		// Apps learn at once that an ad server does not exist, instead of
+		// waiting on a connection that is then refused, and the name is
+		// not even looked up.
+		dnsRules = append(dnsRules, map[string]any{"rule_set": []string{"geosite-ads"}, "action": "predefined", "rcode": "NXDOMAIN"})
+	}
 	if r, ok := findRegion(o.bypass); ok {
 		// The learned list holds the region's sites the domain list misses
 		// (learn.go); the core reloads it whenever the engine adds one.
 		ruleSets = append(ruleSets, localRuleSet(r.geoSiteTag(), o.rulesDir), localRuleSet(r.geoIPTag(), o.rulesDir),
 			map[string]any{"type": "local", "tag": r.learnedTag(), "format": "source", "path": r.learnedFile(o.rulesDir)})
-		rules = append(rules, map[string]any{
+		rules = append(rules, r.unlessShared(map[string]any{
 			"domain_suffix": r.names(),
 			"rule_set":      []string{r.geoSiteTag(), r.learnedTag(), r.geoIPTag()},
-			"outbound":      "direct",
-		})
-		dnsRules = append(dnsRules, map[string]any{
+		}, map[string]any{"outbound": "direct"}))
+		dnsRules = append(dnsRules, r.unlessShared(map[string]any{
 			"domain_suffix": r.names(), "rule_set": []string{r.geoSiteTag(), r.learnedTag()},
-			"action": "route", "server": "local",
-		})
+		}, map[string]any{"action": "route", "server": "local"}))
 	}
 	if o.secureOnly {
 		// Last among the rules that send traffic elsewhere, so local sites
@@ -1059,6 +1118,21 @@ func connectConfig(s *core.Set, o connOptions) map[string]any {
 		cfg["endpoints"] = eps
 	}
 	return cfg
+}
+
+// unlessShared is the rule doing action for names matching match, except
+// names under the region's shared hosting (region.Shared).
+func (r region) unlessShared(match, action map[string]any) map[string]any {
+	rule := match
+	if len(r.Shared) > 0 {
+		rule = map[string]any{"type": "logical", "mode": "and", "rules": []any{
+			match, map[string]any{"domain_suffix": r.Shared, "invert": true},
+		}}
+	}
+	for k, v := range action {
+		rule[k] = v
+	}
+	return rule
 }
 
 func localRuleSet(tag, dir string) map[string]any {

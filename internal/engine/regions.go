@@ -23,13 +23,18 @@ type region struct {
 	// Extra are sites of the region missing from its domain list; each
 	// also covers its subdomains.
 	Extra []string
+	// Shared are names in the region's domain list that are shared hosting
+	// or dynamic DNS for anyone in the world: their sites are never opened
+	// directly, or looked up with the region's resolver, by name.
+	Shared []string
 }
 
 // regions are the choices, in the order they are listed.
 var regions = []region{
 	{Code: "CN", Name: "China", Suffixes: []string{".cn", ".xn--fiqs8s", ".xn--fiqz9s"}},
 	{Code: "IR", Name: "Iran", Suffixes: []string{".ir", ".xn--mgba3a4f16a"}, Subnet: "2.176.0.0/24", // TCI
-		Extra: []string{"aparatcdn.com", "abrarvan.com", "snappmarket.com", "ofogh-kourosh.com", "excoino.com", "chabok.io", "behnevis.com"}},
+		Extra:  []string{"aparatcdn.com", "abrarvan.com", "snappmarket.com", "ofogh-kourosh.com", "excoino.com", "chabok.io", "behnevis.com"},
+		Shared: []string{"co.com", "ct.ws", "epizy.com", "dyndns.org", "info.com", "uni.me"}},
 }
 
 // names are the domain suffixes the region's rules always match: its

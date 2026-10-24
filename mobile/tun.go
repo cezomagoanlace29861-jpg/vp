@@ -74,10 +74,11 @@ func startLocked(addr string) error {
 		return err
 	}
 	engine.Insert(&engine.Key{
-		Device:   "fd://" + strconv.Itoa(dup),
-		Proxy:    "socks5://" + addr,
-		MTU:      MTU,
-		LogLevel: "warn",
+		Device: "fd://" + strconv.Itoa(dup),
+		Proxy:  "socks5://" + addr,
+		MTU:    MTU,
+		// Its warnings name the sites being visited.
+		LogLevel: "silent",
 	})
 	// Every value above is valid, so engine.Start (which exits the process
 	// on a bad key) cannot fail here.

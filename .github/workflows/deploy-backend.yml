@@ -59,6 +59,23 @@ jobs:
           [ -n "$SITE_NAME" ] && args+=(--var "SITE_NAME:$SITE_NAME")
           args+=(--var "COMPANY_NAME:$COMPANY_NAME" --var "COMPANY_ADDRESS:$COMPANY_ADDRESS" --var "CONTACT_EMAIL:$CONTACT_EMAIL")
           npx wrangler deploy "${args[@]}"
+      - name: Check Encrypted Client Hello
+        # ECH hides the service's name in the TLS handshake; the app reads the
+        # key from the HTTPS DNS record (internal/engine/ech.go). Cloudflare
+        # turns it on by default on free zones; this turns it on otherwise,
+        # if the token may change zone settings.
+        continue-on-error: true
+        run: |
+          host="$(sed -n 's/.*pattern *= *"\([^"]*\)", *custom_domain *= *true.*/\1/p' wrangler.toml | head -1)"
+          has_ech() { curl -fsS "https://dns.google/resolve?name=$host&type=HTTPS" | jq -e '[.Answer[]?.data | select(test("ech="))] | length > 0' >/dev/null; }
+          if has_ech; then echo "ECH is on for $host."; exit 0; fi
+          zone="${host#*.}"
+          api="https://api.cloudflare.com/client/v4/zones"
+          id="$(curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$api?name=$zone" | jq -r '.result[0].id // empty')"
+          [ -n "$id" ] || { echo "::warning::The API token cannot see the zone $zone, so ECH was not checked."; exit 1; }
+          out="$(curl -sS -X PATCH -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" --data '{"value":"on"}' "$api/$id/settings/ech")"
+          echo "$out" | jq -c '{success, errors: [.errors[]?.message], value: .result.value}'
+          [ "$(echo "$out" | jq -r .success)" = true ] || { echo "::warning::ECH could not be turned on: the API token needs the Zone Settings Edit permission for $zone."; exit 1; }
       - name: Set the secrets
         env:
           TOKEN_SECRET: ${{ secrets.TOKEN_SECRET }}

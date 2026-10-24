@@ -322,3 +322,22 @@ func TestWithClient(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A service that turns away a shared address says so, and that is not taken
+// for its answer about the account.
+func TestBusy(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":"Too many attempts."}`))
+	}))
+	defer ts.Close()
+	c, _ := newTestClient(t, ts.URL)
+	_, err := c.Login(context.Background(), "ada", "correct horse")
+	if !Busy(err) || err.Error() != "Too many attempts." {
+		t.Fatalf("err = %v", err)
+	}
+	if Busy(ErrUnreachable) || Busy(&Error{Status: http.StatusUnauthorized}) {
+		t.Fatal("other errors are busy")
+	}
+}

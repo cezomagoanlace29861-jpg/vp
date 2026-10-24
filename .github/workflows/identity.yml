@@ -1,0 +1,43 @@
+name: Commit identities
+
+# Every commit must carry a noreply address. The repository is public, and a
+# personal address would identify whoever made the commit. The log names
+# the commit only, never the address.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  noreply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check author and committer addresses
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          git cat-file -e "$BASE^{commit}" 2>/dev/null || git fetch -q origin "$BASE" 2>/dev/null || true
+          if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            range=("$BASE..$HEAD")
+          else
+            # History replaced by a forced push: check what no other branch has.
+            range=("$HEAD" --not $(git for-each-ref --format='%(refname)' refs/remotes/origin | grep -v '/main$'))
+          fi
+          bad="$(git log --format='%h %ae %ce' "${range[@]}" | awk '{
+            for (i = 2; i <= 3; i++)
+              if ($i !~ /@users\.noreply\.github\.com$/ && $i != "noreply@github.com" && $i != "noreply@anthropic.com") {
+                print $1 (i == 2 ? " author" : " committer"); break
+              }
+          }')"
+          if [ -n "$bad" ]; then
+            while read -r sha who; do echo "::error::Commit $sha: the $who address is not a noreply address."; done <<< "$bad"
+            exit 1
+          fi
+          echo "Every new commit uses a noreply address."
