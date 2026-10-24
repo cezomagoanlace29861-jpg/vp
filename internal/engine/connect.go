@@ -1029,7 +1029,10 @@ func connectConfig(s *core.Set, o connOptions) map[string]any {
 	}
 	if o.blockAds {
 		ruleSets = append(ruleSets, localRuleSet("geosite-ads", o.rulesDir))
-		rules = append(rules, map[string]any{"rule_set": []string{"geosite-ads"}, "action": "reject"})
+		// no_drop: sing-box otherwise drops, silently, after 50 rejects in
+		// 30 seconds, which ordinary browsing reaches; then pages hang on
+		// ad connections instead of giving up on them at once.
+		rules = append(rules, map[string]any{"rule_set": []string{"geosite-ads"}, "action": "reject", "no_drop": true})
 	}
 	dnsRules := []any{}
 	if o.blockAds {
@@ -1043,15 +1046,13 @@ func connectConfig(s *core.Set, o connOptions) map[string]any {
 		// (learn.go); the core reloads it whenever the engine adds one.
 		ruleSets = append(ruleSets, localRuleSet(r.geoSiteTag(), o.rulesDir), localRuleSet(r.geoIPTag(), o.rulesDir),
 			map[string]any{"type": "local", "tag": r.learnedTag(), "format": "source", "path": r.learnedFile(o.rulesDir)})
-		rules = append(rules, map[string]any{
+		rules = append(rules, r.unlessShared(map[string]any{
 			"domain_suffix": r.names(),
 			"rule_set":      []string{r.geoSiteTag(), r.learnedTag(), r.geoIPTag()},
-			"outbound":      "direct",
-		})
-		dnsRules = append(dnsRules, map[string]any{
+		}, map[string]any{"outbound": "direct"}))
+		dnsRules = append(dnsRules, r.unlessShared(map[string]any{
 			"domain_suffix": r.names(), "rule_set": []string{r.geoSiteTag(), r.learnedTag()},
-			"action": "route", "server": "local",
-		})
+		}, map[string]any{"action": "route", "server": "local"}))
 	}
 	if o.secureOnly {
 		// Last among the rules that send traffic elsewhere, so local sites
@@ -1117,6 +1118,21 @@ func connectConfig(s *core.Set, o connOptions) map[string]any {
 		cfg["endpoints"] = eps
 	}
 	return cfg
+}
+
+// unlessShared is the rule doing action for names matching match, except
+// names under the region's shared hosting (region.Shared).
+func (r region) unlessShared(match, action map[string]any) map[string]any {
+	rule := match
+	if len(r.Shared) > 0 {
+		rule = map[string]any{"type": "logical", "mode": "and", "rules": []any{
+			match, map[string]any{"domain_suffix": r.Shared, "invert": true},
+		}}
+	}
+	for k, v := range action {
+		rule[k] = v
+	}
+	return rule
 }
 
 func localRuleSet(tag, dir string) map[string]any {

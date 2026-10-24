@@ -2,14 +2,15 @@
 // source, which CI compiles and publishes for the apps every day
 // (.github/workflows/adblock.yml).
 //
-//	adlist -allow allow.txt -local local.txt -keep keep.txt -out ads.json list...
+//	adlist -allow allow.txt -keep keep.txt -out ads.json list...
 //
 // A list may be in hosts, plain domain, wildcard (*.example.com) or Adblock
 // (||example.com^) form, and every entry blocks the name and the names under
-// it. -keep adds names of its own. Nothing is blocked at or under a name in
-// -allow, an Adblock exception (@@||example.com^) or -local (the region's
-// own sites, which the lists do not know and often break), except names at
-// or under -keep: the region's own ad networks.
+// it. -keep adds names of its own. A name in -allow, or in an Adblock
+// exception (@@||example.com^), is never blocked itself; names under it that
+// a list names on their own (ads.example.com under an allowed example.com)
+// still are, unless they are in -allow too. Names in -keep are always
+// blocked.
 package main
 
 import (
@@ -28,7 +29,6 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("adlist: ")
 	allowPath := flag.String("allow", "", "names never blocked")
-	localPath := flag.String("local", "", "the region's own sites, never blocked unless in -keep")
 	keepPath := flag.String("keep", "", "names always blocked")
 	out := flag.String("out", "ads.json", "rule set source to write")
 	min := flag.Int("min", 0, "fail when fewer names than this are blocked")
@@ -42,11 +42,11 @@ func main() {
 		}
 		log.Printf("%s: %d names", p, len(l.block)-before)
 	}
-	keep, allow, local := names{}, names{}, names{}
+	keep, allow := names{}, names{}
 	for _, f := range []struct {
 		path string
 		into names
-	}{{*keepPath, keep}, {*allowPath, allow}, {*localPath, local}} {
+	}{{*keepPath, keep}, {*allowPath, allow}} {
 		if f.path == "" {
 			continue
 		}
@@ -61,8 +61,8 @@ func main() {
 	for n := range l.allow {
 		allow[n] = true
 	}
-	src, stats := build(l.block, keep, allow, local)
-	log.Printf("%d names blocked (%d under allowed names left out, %d covered by a parent), %d allowed", stats.blocked, stats.allowed, stats.covered, stats.exceptions)
+	src, stats := build(l.block, keep, allow)
+	log.Printf("%d names blocked (%d allowed names left out, %d covered by a parent), %d allowed under a blocked name", stats.blocked, stats.allowed, stats.covered, stats.exceptions)
 	if stats.blocked < *min {
 		log.Fatalf("only %d names; a list probably failed to download", stats.blocked)
 	}
@@ -130,11 +130,13 @@ func (l *lists) read(r io.Reader, lists bool) {
 // comment, or an Adblock rule that is not a whole name). An exception keeps
 // its "@@" in front.
 func entry(line string) string {
-	line = strings.TrimSpace(line)
-	if i := strings.IndexByte(line, '#'); i >= 0 {
+	// A comment starts the line or follows a space; any other "#" is an
+	// Adblock element rule (example.com##.banner), which blocks nothing.
+	line = strings.TrimSpace(strings.ReplaceAll(line, "\t", " "))
+	if i := strings.Index(line, " #"); i >= 0 {
 		line = strings.TrimSpace(line[:i])
 	}
-	if line == "" || line[0] == '!' || line[0] == '[' {
+	if line == "" || line[0] == '!' || line[0] == '[' || strings.Contains(line, "#") {
 		return ""
 	}
 	if strings.HasPrefix(line, "@@") {
@@ -143,13 +145,19 @@ func entry(line string) string {
 		}
 		return ""
 	}
-	if strings.HasPrefix(line, "||") {
-		rule, opts, _ := strings.Cut(line[2:], "$")
+	// "||name^" is the name and the names under it; "|name^|" (an exact
+	// address) and a trailing "|" are read the same way here, since a
+	// block list can only name whole names.
+	if rule, ok := strings.CutPrefix(line, "||"); ok || strings.HasPrefix(line, "|") {
+		if !ok {
+			rule = line[1:]
+		}
+		rule, opts, _ := strings.Cut(rule, "$")
 		if opts != "" && opts != "important" {
 			return ""
 		}
-		n, ok := strings.CutSuffix(rule, "^")
-		if !ok || strings.ContainsAny(n, "/*^|") {
+		n, ok := strings.CutSuffix(strings.TrimSuffix(rule, "|"), "^")
+		if !ok || strings.ContainsAny(n, "/*^|:") {
 			return ""
 		}
 		return clean(n)
@@ -173,23 +181,15 @@ type buildStats struct {
 	blocked, allowed, covered, exceptions int
 }
 
-// build returns the rule set source: the block list, with the allowed names
-// taken out where they can be (and by an inverted rule where they cannot,
-// under a blocked parent), in sing-box's headless rule form.
-func build(block, keep, allow, local names) (map[string]any, buildStats) {
+// build returns the rule set source: the block list without the allowed
+// names, and an inverted rule for allowed names under a blocked one, in
+// sing-box's headless rule form.
+func build(block, keep, allow names) (map[string]any, buildStats) {
 	var st buildStats
-	exempt := names{}
-	for _, s := range []names{allow, local} {
-		for n := range s {
-			if !keep.under(n) {
-				exempt[n] = true
-			}
-		}
-	}
 	all := names{}
 	for _, s := range []names{block, keep} {
 		for n := range s {
-			if exempt.under(n) && !keep.under(n) {
+			if allow[n] && !keep[n] {
 				st.allowed++
 				continue
 			}
@@ -204,10 +204,9 @@ func build(block, keep, allow, local names) (map[string]any, buildStats) {
 		}
 		list = append(list, n)
 	}
-	// Only exceptions under a blocked name need the inverted rule.
 	var except []string
-	for n := range exempt {
-		if i := strings.IndexByte(n, '.'); i >= 0 && all.under(n[i+1:]) {
+	for n := range allow {
+		if i := strings.IndexByte(n, '.'); !keep[n] && i >= 0 && all.under(n[i+1:]) {
 			except = append(except, n)
 		}
 	}
@@ -217,9 +216,8 @@ func build(block, keep, allow, local names) (map[string]any, buildStats) {
 	rule := map[string]any{"domain_suffix": list}
 	if len(except) > 0 {
 		rule = map[string]any{"type": "logical", "mode": "and", "rules": []any{
-			rule, map[string]any{"domain_suffix": except, "invert": true},
+			rule, map[string]any{"domain": except, "invert": true},
 		}}
 	}
 	return map[string]any{"version": 2, "rules": []any{rule}}, st
 }
-

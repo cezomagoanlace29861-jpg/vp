@@ -544,7 +544,7 @@ async function crowdSummary(request, env, url) {
 // mirror serves the app's own server lists and update file from GitHub, one
 // more way to reach them when GitHub and its CDNs are filtered. Only those
 // files, cached at the edge for ten minutes.
-const MIRRORED = /^\/list\/(servers\/(hot\.txt|new\.txt|fresh\.txt|all-[1-8]\.txt|tor\.json|meta\.json)|main\/update\.json)$/;
+const MIRRORED = /^\/list\/(servers\/(hot\.txt|new\.txt|fresh\.txt|all-[1-8]\.txt|tor\.json|meta\.json)|main\/update\.json|rules\/geosite-ads\.srs)$/;
 async function mirror(url) {
   const m = MIRRORED.exec(url.pathname);
   if (!m) return new Response("Not found", { status: 404 });

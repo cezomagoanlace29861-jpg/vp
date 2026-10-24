@@ -20,11 +20,13 @@ import (
 var bundledRules embed.FS
 
 var ruleSets = map[string]string{
-	"geoip-cn.srs":    "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-	"geosite-cn.srs":  "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-	"geoip-ir.srs":    "https://raw.githubusercontent.com/Chocolate4U/Iran-sing-box-rules/rule-set/geoip-ir.srs",
-	"geosite-ir.srs":  "https://raw.githubusercontent.com/Chocolate4U/Iran-sing-box-rules/rule-set/geosite-ir.srs",
-	"geosite-ads.srs": "https://raw.githubusercontent.com/Chocolate4U/Iran-sing-box-rules/rule-set/geosite-category-ads-all.srs",
+	"geoip-cn.srs":   "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
+	"geosite-cn.srs": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+	"geoip-ir.srs":   "https://raw.githubusercontent.com/Chocolate4U/Iran-sing-box-rules/rule-set/geoip-ir.srs",
+	"geosite-ir.srs": "https://raw.githubusercontent.com/Chocolate4U/Iran-sing-box-rules/rule-set/geosite-ir.srs",
+	// Built every day from the big free lists (.github/workflows/adblock.yml);
+	// the copy shipped with the app is the smaller Chocolate4U list.
+	"geosite-ads.srs": "https://raw.githubusercontent.com/cezomagoanlace29861-jpg/Albatross/rules/geosite-ads.srs",
 }
 
 // installRules writes the bundled rule sets unless a newer copy exists.

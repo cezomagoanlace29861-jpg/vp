@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -213,5 +214,46 @@ func TestBlockAdsDefault(t *testing.T) {
 		if s := loadSettings(dir, false); s.BlockAds != want || s.Version != settingsVersion {
 			t.Errorf("%q: block_ads %v version %d", file, s.BlockAds, s.Version)
 		}
+	}
+}
+
+// Ad names are refused at once, also in DNS, and shared hosting in the
+// region's list (anyone's sites) never opens directly.
+func TestAdAndSharedRules(t *testing.T) {
+	n, err := node.ParseLink("vless://b831381d-6324-4d53-ad4f-8cda48b30811@example.com:443?security=tls&type=tcp#x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := core.BuildSet([]*node.Node{n}, core.BuildOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := connectConfig(set, connOptions{listen: "127.0.0.1", port: 10808, bypass: "IR", blockAds: true, rulesDir: t.TempDir(), clashAddr: "127.0.0.1:9090"})
+	b, _ := json.Marshal(cfg)
+	var c struct {
+		Route struct{ Rules []map[string]any } `json:"route"`
+		DNS   struct{ Rules []map[string]any } `json:"dns"`
+	}
+	json.Unmarshal(b, &c)
+	ads, direct := -1, -1
+	for i, r := range c.Route.Rules {
+		if fmt.Sprint(r["rule_set"]) == "[geosite-ads]" {
+			if r["action"] != "reject" || r["no_drop"] != true {
+				t.Fatalf("ad rule %v", r)
+			}
+			ads = i
+		}
+		if r["outbound"] == "direct" && r["type"] == "logical" {
+			direct = i
+			if !strings.Contains(fmt.Sprint(r["rules"]), "epizy.com") || !strings.Contains(fmt.Sprint(r["rules"]), "invert:true") {
+				t.Fatalf("direct rule does not leave shared hosting out: %v", r)
+			}
+		}
+	}
+	if ads < 0 || direct < 0 || ads > direct {
+		t.Fatalf("ad rule at %d, region rule at %d", ads, direct)
+	}
+	if len(c.DNS.Rules) < 2 || c.DNS.Rules[0]["rcode"] != "NXDOMAIN" || c.DNS.Rules[1]["type"] != "logical" {
+		t.Fatalf("dns rules %v", c.DNS.Rules)
 	}
 }
