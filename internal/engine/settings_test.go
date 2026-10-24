@@ -196,3 +196,22 @@ func TestRecentServersWhenNothingFresh(t *testing.T) {
 		t.Fatal("a fresh server was offered as a recent one")
 	}
 }
+
+// The ad blocker is on for new users and was turned on once for those who
+// had the old default (off); turning it off afterwards sticks.
+func TestBlockAdsDefault(t *testing.T) {
+	for file, want := range map[string]bool{
+		"":                                   true,
+		`{"block_ads": false}`:               true,
+		`{"block_ads": false, "version": 1}`: false,
+		`{"block_ads": true, "version": 1}`:  true,
+	} {
+		dir := t.TempDir()
+		if file != "" {
+			os.WriteFile(filepath.Join(dir, "settings.json"), []byte(file), 0o600)
+		}
+		if s := loadSettings(dir, false); s.BlockAds != want || s.Version != settingsVersion {
+			t.Errorf("%q: block_ads %v version %d", file, s.BlockAds, s.Version)
+		}
+	}
+}

@@ -74,7 +74,13 @@ type Settings struct {
 	CleanIP bool `json:"clean_ip"`
 	// OverrideGPS puts the phone's location in the VPN's country (Android).
 	OverrideGPS bool `json:"override_gps"`
+	// Version is the settingsVersion the file was last brought up to.
+	Version int `json:"version,omitempty"`
 }
+
+// settingsVersion 1 turned the ad blocker on for everyone once: it was
+// off by default before, so almost no one had chosen to leave it off.
+const settingsVersion = 1
 
 // ProtocolChoice is a connection protocol the user can pick.
 type ProtocolChoice struct {
@@ -109,6 +115,8 @@ func DefaultSettings() Settings {
 		DeepSources: true,
 		Warp:        true,
 		CleanIP:     true,
+		BlockAds:    true,
+		Version:     settingsVersion,
 	}
 }
 
@@ -122,8 +130,13 @@ func loadSettings(dir string, mobile bool) Settings {
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "settings.json"))
 	if err == nil {
+		s.Version = 0
 		json.Unmarshal(b, &s)
 	}
+	if s.Version < 1 {
+		s.BlockAds = true
+	}
+	s.Version = settingsVersion
 	if mobile {
 		// "proxy" is the device-wide VPN there; there is no other mode.
 		s.Mode = "proxy"

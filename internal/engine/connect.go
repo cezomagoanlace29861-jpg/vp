@@ -1032,6 +1032,12 @@ func connectConfig(s *core.Set, o connOptions) map[string]any {
 		rules = append(rules, map[string]any{"rule_set": []string{"geosite-ads"}, "action": "reject"})
 	}
 	dnsRules := []any{}
+	if o.blockAds {
+		// Apps learn at once that an ad server does not exist, instead of
+		// waiting on a connection that is then refused, and the name is
+		// not even looked up.
+		dnsRules = append(dnsRules, map[string]any{"rule_set": []string{"geosite-ads"}, "action": "predefined", "rcode": "NXDOMAIN"})
+	}
 	if r, ok := findRegion(o.bypass); ok {
 		// The learned list holds the region's sites the domain list misses
 		// (learn.go); the core reloads it whenever the engine adds one.
