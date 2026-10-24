@@ -9,6 +9,8 @@ aparat.com
 www.aparat.com
 varzesh3.com
 www.varzesh3.com
+player.tavoos.net
+excoino.com
 divar.ir
 api.divar.ir
 snapp.ir
@@ -118,3 +120,11 @@ claude.ai
 www.tiktok.com
 cloudflare.com
 cdn.jsdelivr.net
+# --- push registration and phone makers' services
+sdk.iad-01.braze.com
+cp.pushwoosh.com
+register.xmpush.global.xiaomi.com
+findapi.micloud.xiaomi.net
+# --- names under a public suffix (home cameras and servers)
+myhome.camdvr.org
+shop1.mysecuritycamera.org

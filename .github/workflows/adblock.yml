@@ -3,7 +3,7 @@ name: Ad list
 # Builds the ad, tracker and threat list the apps block (geosite-ads.srs)
 # from free lists, every day after HaGeZi publishes, and puts it on the
 # "rules" branch, which the apps download through mirrors (rules.go). A
-# pull request that changes the build only builds and checks it.
+# pull request, or a run on another branch, only builds and checks it.
 on:
   schedule:
     - cron: "40 11 * * *"
@@ -17,8 +17,9 @@ on:
 permissions:
   contents: write
 
+# Every run that publishes (main) waits for the one before it.
 concurrency:
-  group: adblock-${{ github.ref }}
+  group: adblock-${{ github.ref == 'refs/heads/main' && 'publish' || github.ref }}
 
 env:
   SINGBOX_VERSION: "1.14.3"
@@ -75,7 +76,8 @@ jobs:
           done
           exit $bad
       - name: Publish
-        if: github.event_name != 'pull_request'
+        # Only main's build goes to the apps; elsewhere a run is a dry run.
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           mkdir out
           cp geosite-ads.srs ads.json out/

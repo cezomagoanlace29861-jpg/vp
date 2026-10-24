@@ -6,7 +6,8 @@
 //
 // A list may be in hosts, plain domain, wildcard (*.example.com) or Adblock
 // (||example.com^) form, and every entry blocks the name and the names under
-// it. -keep adds names of its own. A name in -allow, or in an Adblock
+// it, except a public suffix (where anyone can get a name). -keep adds names
+// of its own. A name in -allow, or in an Adblock
 // exception (@@||example.com^), is never blocked itself; names under it that
 // a list names on their own (ads.example.com under an allowed example.com)
 // still are, unless they are in -allow too. Names in -keep are always
@@ -23,6 +24,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 func main() {
@@ -62,7 +65,7 @@ func main() {
 		allow[n] = true
 	}
 	src, stats := build(l.block, keep, allow)
-	log.Printf("%d names blocked (%d allowed names left out, %d covered by a parent), %d allowed under a blocked name", stats.blocked, stats.allowed, stats.covered, stats.exceptions)
+	log.Printf("%d names blocked (%d allowed names and %d public suffixes left out, %d covered by a parent), %d allowed under a blocked name", stats.blocked, stats.allowed, stats.suffixes, stats.covered, stats.exceptions)
 	if stats.blocked < *min {
 		log.Fatalf("only %d names; a list probably failed to download", stats.blocked)
 	}
@@ -145,22 +148,30 @@ func entry(line string) string {
 		}
 		return ""
 	}
-	// "||name^" is the name and the names under it; "|name^|" (an exact
-	// address) and a trailing "|" are read the same way here, since a
-	// block list can only name whole names.
-	if rule, ok := strings.CutPrefix(line, "||"); ok || strings.HasPrefix(line, "|") {
-		if !ok {
-			rule = line[1:]
-		}
-		rule, opts, _ := strings.Cut(rule, "$")
+	// Adblock rules for a whole name: "||name^" (the name and the names
+	// under it, the "^" optional), "|name^|", "://name^", ".name^",
+	// "||*.name^" and "name^". A block list can only name whole names, so
+	// all of them are read as "||name^".
+	if strings.HasPrefix(line, "|") || strings.HasPrefix(line, "://") || strings.Contains(line, "^") {
+		rule, opts, _ := strings.Cut(line, "$")
 		if opts != "" && opts != "important" {
 			return ""
 		}
-		n, ok := strings.CutSuffix(strings.TrimSuffix(rule, "|"), "^")
-		if !ok || strings.ContainsAny(n, "/*^|:") {
+		rule, sep := strings.CutSuffix(strings.TrimSuffix(rule, "|"), "^")
+		if r, ok := strings.CutPrefix(rule, "||"); ok {
+			rule = r
+		} else if !sep {
+			// "|https://..." and the like match the start of an address.
 			return ""
 		}
-		return clean(n)
+		rule = strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(rule, "|"), "://"), "*.")
+		rule = strings.TrimPrefix(rule, ".")
+		// A name ending in "." ("||adservice.google.") matches the start
+		// of names under any top-level domain.
+		if strings.HasSuffix(rule, ".") || strings.ContainsAny(rule, "/*^|:") {
+			return ""
+		}
+		return clean(rule)
 	}
 	if strings.ContainsAny(line, "|^$/") {
 		return ""
@@ -178,7 +189,7 @@ func clean(n string) string {
 }
 
 type buildStats struct {
-	blocked, allowed, covered, exceptions int
+	blocked, allowed, covered, exceptions, suffixes int
 }
 
 // build returns the rule set source: the block list without the allowed
@@ -191,6 +202,13 @@ func build(block, keep, allow names) (map[string]any, buildStats) {
 		for n := range s {
 			if allow[n] && !keep[n] {
 				st.allowed++
+				continue
+			}
+			// A public suffix (camdvr.org, ddns.net) is where anyone gets a
+			// name of their own, home cameras and servers included; the
+			// lists name the bad ones under it one by one.
+			if ps, _ := publicsuffix.PublicSuffix(n); ps == n {
+				st.suffixes++
 				continue
 			}
 			all[n] = true

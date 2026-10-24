@@ -18,6 +18,16 @@ func TestEntry(t *testing.T) {
 		"@@||app.adjust.com^|":                "@@app.adjust.com",
 		"@@|statcounter.com^|":                "@@statcounter.com",
 		"||clarity.ms^|":                      "clarity.ms",
+		"||fjuga.top":                         "fjuga.top",
+		"||fjuga.top$important":               "fjuga.top",
+		".potopy.ru^":                         "potopy.ru",
+		"://jhf.ru^":                          "jhf.ru",
+		"tracker.example.com^":                "tracker.example.com",
+		"||*.exaapi.com^":                     "exaapi.com",
+		"||adservice.google.":                 "",
+		"||an.yandex.^":                       "",
+		"|https://ads.example.com/":           "",
+		"||ads.*.example.com^":                "",
 		"||bitpin.ir^$image,from=par30dl.net": "",
 		"||cdn.example.com:8080^":             "",
 		"||ads.example.com^$third-party":      "",
@@ -48,6 +58,7 @@ ads.digikala.com
 yektanet.com
 pixel.bank.ir
 mihanblog.com
+||camdvr.org^
 `), true)
 	if l.block["localhost"] || l.block["0.0.0.0"] {
 		t.Fatal("kept a name that is not a domain")
@@ -66,7 +77,7 @@ mihanblog.com
 	if got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
-	if st.blocked != 6 || st.covered != 1 || st.allowed != 1 || st.exceptions != 1 {
+	if st.blocked != 6 || st.covered != 1 || st.allowed != 1 || st.exceptions != 1 || st.suffixes != 1 {
 		t.Fatalf("stats %+v", st)
 	}
 }

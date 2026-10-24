@@ -427,6 +427,10 @@ func (e *Engine) UpdateSettings(s Settings) error {
 	if old.HelpOthers != s.HelpOthers {
 		go e.updateHelp()
 	}
+	if s.BlockAds && !old.BlockAds {
+		// The ad list is only kept fresh while it is used.
+		e.refreshRules()
+	}
 	if old.DeepSources != s.DeepSources || len(old.UserSources) != len(s.UserSources) || len(old.DisabledSources) != len(s.DisabledSources) {
 		e.buildSources()
 		e.triggerRefill()

@@ -69,6 +69,7 @@ adj.st
 app.appsflyer.com
 onelink.me
 app.link
+app.adtrace.io
 t.co
 bit.ly
 lnkd.in
@@ -106,12 +107,79 @@ whatsapp.net
 web.whatsapp.com
 telegram.org
 t.me
-# --- push providers apps use for notifications
+# --- push providers apps use for notifications: where their SDKs register a
+# device (blocked, the provider never gets its token and no notification arrives)
 onesignal.com
-c.webengage.com
 pushe.co
 najva.com
 chabok.io
+c.webengage.com
+c.in.webengage.com
+c.us.webengage.com
+p.webengage.com
+ssl.widgets.webengage.com
+wsdk-files.webengage.com
+msdk-files.webengage.com
+notification.webengage.com
+sdk.iad-01.braze.com
+sdk.iad-02.braze.com
+sdk.iad-03.braze.com
+sdk.iad-04.braze.com
+sdk.iad-05.braze.com
+sdk.iad-06.braze.com
+sdk.iad-07.braze.com
+sdk.iad-08.braze.com
+sdk.fra-01.braze.eu
+sdk.fra-02.braze.eu
+clevertap-prod.com
+wzrkt.com
+api.iterable.com
+api.leanplum.com
+cp.pushwoosh.com
+apiv2.moengage.com
+sdk-01.moengage.com
+sdk-02.moengage.com
+sdk-03.moengage.com
+sdk-04.moengage.com
+sdk-05.moengage.com
+sdk-06.moengage.com
+track.customer.io
+track-sdk.customer.io
+cdp.customer.io
+cdp-eu.customer.io
+# --- phone makers' own services: push, find device, cloud, theme and app stores
+api.xmpush.xiaomi.com
+api.xmpush.global.xiaomi.com
+register.xmpush.global.xiaomi.com
+sgp-api.xmpush.global.xiaomi.com
+fr-api.xmpush.global.xiaomi.com
+fr-register.xmpush.global.xiaomi.com
+ru-api.xmpush.global.xiaomi.com
+ru-register.xmpush.global.xiaomi.com
+idmb-api.xmpush.global.xiaomi.com
+resolver.msg.global.xiaomi.net
+findapi.micloud.xiaomi.net
+us.api.micloud.xiaomi.net
+statusapi.micloud.xiaomi.net
+api.g.micloud.xiaomi.net
+mibi.api.xiaomi.com
+cdn.fds.api.xiaomi.com
+thm.market.xiaomi.com
+t1.market.xiaomi.com
+t2.market.xiaomi.com
+t3.market.xiaomi.com
+t4.market.xiaomi.com
+t5.market.xiaomi.com
+t7.market.xiaomi.com
+t15.market.xiaomi.com
+t17.market.xiaomi.com
+push.heytapmobile.com
+api-gl.cdo.heytapmobile.com
+api-in.cdo.heytapmobile.com
+api-id.cdo.heytapmobile.com
+asia-st-exappupgrade.vivoglobal.com
+eu-st-exappupgrade.vivoglobal.com
+ru-st-exappupgrade.vivoglobal.com
 # --- CDNs, captchas, chat widgets (site features)
 cdn.jsdelivr.net
 cdnjs.cloudflare.com
@@ -212,5 +280,15 @@ akhbarrasmi.com
 # --- Iranian video and streaming backends the lists block (playback would fail)
 sabaidea.cloud
 farakav.com
+# Tavoos serves ads, and also the video player some Iranian sites play their own videos in
+player.tavoos.net
+cdn.tavoos.net
+# --- services a scam warning list blocks whole, used by many: whoever has money there
+# must still reach it (excoino.com is also an Iranian site opened directly, see regions.go)
+excoino.com
+irancloudmining.com
+axotrade.com
+minepi.com
+arongroups.co
 # --- affiliate links (the user clicked them)
 affilio.ir
